@@ -1,0 +1,20 @@
+Google Summer of Code 2008
+
+Project:      Implementation and Integration of a Universal Monitoring Framework
+              (http://code.google.com/soc/2008/oscar/appinfo.html?csaid=5E434003EE025889)
+
+Organization: Open Source Cluster Application Resources (OSCAR)
+
+Student Name: Chuka Okoye
+Email:        okoye9@gmail.com
+
+Mentor Name:  Box Leangsuksun
+Email:        box@latech.edu
+
+My Google SoC project was to develop and integrate into OSCAR a monitoring framework that was designed by OSCAR's Oak Ridge National Lab team. The framework would be used by other developers who wish to integrate some form of redundancy in their applications by monitoring the state of various services. Detailed information on how to develop monitoring plugins based on the framework and testing this framework with an exisiting OSCAR installation can be found in the pdf version of this README.
+
+For more information about the project at:
+
+http://svn.oscar.openclustergroup.org/trac/oscar/wiki/monitoring_framework
+
+http://okoye.wordpress.com

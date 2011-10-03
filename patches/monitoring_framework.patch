@@ -1,0 +1,964 @@
+Index: scripts/MN_C3_driver
+===================================================================
+--- scripts/MN_C3_driver	(revision 0)
++++ scripts/MN_C3_driver	(revision 0)
+@@ -0,0 +1,91 @@
++#!/usr/bin/perl -w
++#
++#   Copyright (c) 2008 Okoye Chuka <okoye9@gmail.com>
++#                    All rights reserved.
++#
++#   This program is free software; you can redistribute it and/or modify
++#   it under the terms of the GNU General Public License as published by
++#   the Free Software Foundation; either version 2 of the License, or
++#   (at your option) any later version.
++#
++#   This program is distributed in the hope that it will be useful,
++#   but WITHOUT ANY WARRANTY; without even the implied warranty of
++#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++#   GNU General Public License for more details.
++#
++#   You should have received a copy of the GNU General Public License
++#   along with this program; if not, write to the Free Software#   Foundation, I
++#   nc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++#
++#@description:	A simple test driver for the C3. It updates the C3 conf file.
++#
++#TODO: Extend it to aggregate data from multiple sources.
++#	
++
++use strict;
++use lib "$ENV{OSCAR_HOME}/lib";
++use OSCAR::OCA::Action;
++use OSCAR::OCA::Gather;
++use OSCAR::MN_Driver;
++use threads;
++use IO::Handle qw();
++
++#Note: It is the responsiblity of the driver to check if the specified component#is installed before trying to use. 
++my @data_sources;  #List all heartbeat supplying components here.
++my @data;
++my $heartbeat_comp = "Ganglia_Heartbeat"; #Hard coded for now.
++my $actor_thread;
++my $gather_thread;
++
++STDOUT->autoflush(1);
++#First we initialize the two subsystems
++OSCAR::OCA::Gather::open();#Later parse the hash returned to determine what components provide heartbeat info.
++OSCAR::OCA::Action::open();
++
++#Next spawn a thread for actor and gathering systems.
++$actor_thread = threads->create(\&actor);
++$gather_thread = threads->create(\&gather);
++
++#Dont quit!
++$actor_thread -> join;
++$gather_thread -> join;
++
++#***********************************************************
++# Responsible for detecting changes in the monitoring db and
++# querying the rules system
++#***********************************************************
++sub actor
++{
++	my %last_values;
++	my %current_values;
++	my $count;
++	#Check for changes continually from the monitoring database and update as needed.
++	while(1)
++	{
++		sleep 30;
++		$count = 0;
++		@data = OSCAR::MN_Driver::retrieve("Ganglia_Heartbeat");
++		%current_values = map {$count++ => $_}@data;
++		foreach my $key(keys %current_values)
++		{
++			if(!($current_values{$key}{'ganglia_heartbeat'} eq $last_values{$key}{'ganglia_heartbeat'})) #Expect a warning about uninitialized values during the first iteration
++			{
++				&OSCAR::OCA::Action::activate_rules($current_values{$key}{'ganglia_heartbeat'},$current_values{$key}{'hostname'});
++			}
++		}		
++		%last_values = %current_values; 
++	}
++}
++
++#********************************************************
++# Responsible for querying the chosen heartbeat component
++#********************************************************
++sub gather
++{
++	my $str = "OCA::Gather::".$heartbeat_comp."::update()";
++	while(1)
++	{
++		eval $str;	
++		sleep 15;
++	}
++}
+
+Property changes on: scripts/MN_C3_driver
+___________________________________________________________________
+Name: svn:executable
+   + *
+
+Index: lib/OSCAR/MN_Driver.pm
+===================================================================
+--- lib/OSCAR/MN_Driver.pm	(revision 0)
++++ lib/OSCAR/MN_Driver.pm	(revision 0)
+@@ -0,0 +1,58 @@
++#   Copyright (c) 2008 Okoye Chuka <okoye9@gmail.com>
++#                    All rights reserved.
++#
++#   This program is free software; you can redistribute it and/or modify
++#   it under the terms of the GNU General Public License as published by
++#   the Free Software Foundation; either version 2 of the License, or
++#   (at your option) any later version.
++#
++#   This program is distributed in the hope that it will be useful,
++#   but WITHOUT ANY WARRANTY; without even the implied warranty of
++#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++#   GNU General Public License for more details.
++#
++#   You should have received a copy of the GNU General Public License
++#   along with this program; if not, write to the Free Software#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++#
++#@description:  This module is reponsible for all common operations 
++#               drivers will require such as access data in monitoring database.
++#
++#@methods:      retrieve: Gets data from monitoring database.
++#
++
++package OSCAR::MN_Driver;
++
++use lib "$ENV{OSCAR_HOME}/lib";
++use OSCAR::oda;
++
++#*****************************************************************************
++# Retrieve subroutine queries the monitoring database
++# and returns data from a specific column and its corresponding
++# hostnames.
++# @param: $: column to retrieve
++# @return: @: The specified column or an error if not found or db is not setup
++#******************************************************************************
++sub retrieve($)
++{
++	my $table_ref;
++	my (%options,@errors,@results);
++	my $column = shift;
++	my $sql;
++	my $mon_table = 'Oscar_Monitor';
++	#First check if the monitoring table is initialized
++	$table_ref = oda::list_tables(\%options,\@errors);
++	if(defined $$table_ref{$mon_table})
++	{
++		#Since it is initialized query it.
++		$sql = "SELECT $column,hostname FROM $mon_table";
++		(%options,@errors,@results) = ();
++		oda::do_query(\%options,$sql,\@results,\@error);
++		return @results;	
++	}
++	else
++	{
++		return undef;
++	}		
++}
++
++1;
+Index: lib/OSCAR/OCA/Gather.pm
+===================================================================
+--- lib/OSCAR/OCA/Gather.pm	(revision 0)
++++ lib/OSCAR/OCA/Gather.pm	(revision 0)
+@@ -0,0 +1,124 @@
++# Copyright (c) 2008 Okoye Chuka <okoye9@gmail.com>
++#		     All rights reserved.
++#
++#   This program is free software; you can redistribute it and/or modify
++#   it under the terms of the GNU General Public License as published by
++#   the Free Software Foundation; either version 2 of the License, or
++#   (at your option) any later version.
++#
++#   This program is distributed in the hope that it will be useful,
++#   but WITHOUT ANY WARRANTY; without even the implied warranty of
++#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++#   GNU General Public License for more details.
++#
++#   You should have received a copy of the GNU General Public License
++#   along with this program; if not, write to the Free Software
++#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++#
++#
++# @description: Gather.pm is responsible for gathering monitoring data from all 
++#		sources and putting into the Oscar Monitoring Database.
++# @methods: open, update, database_entry methods.
++
++package OSCAR::OCA::Gather;
++
++use strict;
++use Data::Dumper;
++use OSCAR::Database;
++use OSCAR::oda;
++use OSCAR::MN_Framework;
++use OSCAR::Logger;
++use OSCAR::OCA;
++
++my @component_list;
++my $oscar_table_name = "Oscar_Monitor";
++#*********************************************************************************************************************
++#@description: the init subroutine essentially parses all the component config hashes returned by
++#		each components open method and returns an array of hashes.
++#		It is also responsible for creating columns in the OSCAR Database corresponding
++#		to each 'componentname'_'functionality' got from each of the config files.
++#@return:	It returns a hash of all hash configuration found.
++#********************************************************************************************************************* 
++sub open
++{
++	my %return_hashes;
++	my $column_name;
++	my $comps;
++	
++	$comps = &OSCAR::OCA::find_components("Gather");#The OCA framework produces a warning here.
++	@component_list = @$comps;
++	&OSCAR::MN_Framework::create();#Recreate Monitoring table with updated components.
++	foreach my $component(@component_list){
++		my %temp = ();
++		my $str = '%temp'."=&OCA::Gather::".$component."::open()";
++		eval $str;
++		$return_hashes{"$temp{component}_$temp{function}"}={%temp};
++		if( defined $return_hashes{"$temp{component}_$temp{function}"}){
++			#Now create a column for this component using the format: 'component'_'functionality'
++			$column_name = "$temp{component}_$temp{function}";
++			database_entry($column_name);
++			oscar_log_subsection("successfully inserted $column_name");
++		}
++		else{
++			oscar_log_subsection("Could not read $component config files!");
++		}
++	}
++
++return %return_hashes;
++	
++}
++#**************************************************************************************************************************
++#@description: the database_entry is an internal method that essentially inserts a new column into the monitoring database
++#@parameters: column_name A string representing the column name to insert into the database
++#@return:	Returns a non zero integer if successful.
++#**************************************************************************************************************************
++sub database_entry($)
++{
++	my $sql_cmd;
++	my (%options, @error_string);
++	my $column_name = shift;
++	$sql_cmd = "ALTER TABLE $oscar_table_name ADD $column_name VARCHAR(100)"; 
++	&oda::oda_connect();	
++	if(!(oda::do_sql_command(\%options,$sql_cmd,"","",\@error_string))){
++		oscar_log_subsection("Failed to create new column for $column_name");
++		return 0;
++	}
++	&oda::oda_disconnect();
++	return 1;
++}
++
++#************************************************************************************************************************
++#@description: the update method is responsible for inserting all data into the Oscar Monitoring Framework. It is called
++#		by all the components that want to be monitored.
++#@parameters:	A hash containing the monitoring data to be inserted.
++#@return:	Non zero if insertion was successful.
++#************************************************************************************************************************
++sub update($)
++{
++	my %hash_data = @_;
++	my $data = ();
++	my $sql_cmd = ();
++	my $column = ();
++	my (%options, @error_strings);
++	if(%hash_data){
++		$column = $hash_data{'column'};
++		delete $hash_data{'column'}; 
++		&oda::oda_connect(); #Obtain Database handle to prevent racing condition
++		foreach my $host(keys %hash_data){
++			$data=();
++			$data = $hash_data{$host};#Data to Insert into Monitoring Database
++			$sql_cmd = "UPDATE $oscar_table_name SET $column='$data' WHERE hostname='$host'";
++			if(!(oda::do_sql_command(\%options,$sql_cmd,"","",\@error_strings)))
++			{
++				oscar_log_subsection("Failed in updating $host with $column");
++			}
++		}
++		&oda::oda_disconnect();#Release handle
++	return 1;
++	}
++	else{
++		oscar_log_subsection("A component update failed! No hash was found.");	
++		return 0;
++	}
++}
++1;
+Index: lib/OSCAR/OCA/Action.pm
+===================================================================
+--- lib/OSCAR/OCA/Action.pm	(revision 0)
++++ lib/OSCAR/OCA/Action.pm	(revision 0)
+@@ -0,0 +1,80 @@
++#   Copyright (c) 2008 Okoye Chuka <okoye9@gmail.com>
++#                    All rights reserved.
++#
++#   This program is free software; you can redistribute it and/or modify
++#   it under the terms of the GNU General Public License as published by
++#   the Free Software Foundation; either version 2 of the License, or
++#   (at your option) any later version.
++#
++#   This program is distributed in the hope that it will be useful,
++#   but WITHOUT ANY WARRANTY; without even the implied warranty of
++#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++#   GNU General Public License for more details.
++#
++#   You should have received a copy of the GNU General Public License
++#   along with this program; if not, write to the Free Software
++#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++#
++#
++#@description:	Monitoring Action Rule System is reponsible for quering the
++#		rule system in the event of a change in the monitoring database 
++#		after been notified by a monitoring driver.
++#
++#subroutines: activate_rules(rule), init().
++#
++#All rules are stored in {OSCAR_HOME}/lib/OSCAR/OCA/Action/RULES/
++#***************************************************************************
++
++package OSCAR::OCA::Action;
++
++use strict;
++use warnings;
++use Data::Dumper;
++use lib "$ENV{OSCAR_HOME}/lib";
++use OSCAR::OCA;
++
++our @action_components; #All Modules of the Action Framework.
++my $rule;
++my @mon_data;
++my $str;
++#****************************************************************
++#@description: This subroutine queries the OCA framework to 
++#	       set a list of components in the Action Subsystem.
++#	       When a driver is initialized, it is advisable to 
++#	       call this subroutine	
++#	
++#@return:	Non zero if sucessful
++#****************************************************************
++sub open
++{
++	my $component;
++	
++	$component = &OSCAR::OCA::find_components("Action");
++	@action_components = @$component;
++
++	#Now we set the environment variable $ENV{ACTION_RULES_HOME}
++	$ENV{ACTION_RULES_HOME}= "$ENV{OSCAR_HOME}/lib/OSCAR/OCA/Action/RULES";
++	
++	return 1;
++}
++
++#********************************************************************************************************
++#@description: Activate rules is called by the requesting monitoring
++#		driver to query the rule system each time a system 
++#		configuration modification is detected
++#@parameters:	$rule: System Configuration Status such as NODE_DOWN or UNDEFINED.
++#		@mon_data: An array containing updated info for the rule to apply.
++#*********************************************************************************************************
++sub activate_rules($@)
++{
++	($rule,@mon_data) = undef;
++	($rule,@mon_data) = @_;
++	foreach my $component(@action_components)
++	{
++		$str = "&OCA::Action::".$component."::open('$rule','@mon_data')";
++		eval $str;
++	}
++		
++}
++
++1;
+Index: lib/OSCAR/OCA/Gather/Ganglia_Diskfree.pm
+===================================================================
+--- lib/OSCAR/OCA/Gather/Ganglia_Diskfree.pm	(revision 0)
++++ lib/OSCAR/OCA/Gather/Ganglia_Diskfree.pm	(revision 0)
+@@ -0,0 +1,131 @@
++#!/usr/bin/env perl
++#  Copyright (c) 2008 Okoye Chuka <okoye9@gmail.com>
++#                    All rights reserved.
++#
++#   This program is free software; you can redistribute it and/or modify
++#   it under the terms of the GNU General Public License as published by
++#   the Free Software Foundation; either version 2 of the License, or
++#   (at your option) any later version.
++#
++#   This program is distributed in the hope that it will be useful,
++#   but WITHOUT ANY WARRANTY; without even the implied warranty of
++#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++#   GNU General Public License for more details.
++#
++#   You should have received a copy of the GNU General Public License
++#   along with this program; if not, write to the Free Software#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++#
++#
++# @description: A module that is supposed to get the size of diskspace remaining on root partition
++#		of each node and convert to a hash understood by the Monitoring Framework
++#		and finally call the update method to insert this into the monitoring database.
++#		The format of the data entered into the database is described below.
++#
++package OCA::Gather::Ganglia_Diskfree;
++
++use strict;
++use warnings;
++use RRDs;
++use lib "$ENV{OSCAR_HOME}/lib";
++use OSCAR::OCA::Gather;
++use OSCAR::Logger;
++
++my @clusters;
++my @nodes;
++my $diskfree;
++my $rrd_home;
++my $home;
++my %data;
++
++$rrd_home = "/var/lib/ganglia/rrds"; #Contains data about the cluster health
++
++#*************************************************
++#@description: Called when module is initialized
++#@return:	Configuration information
++#*************************************************
++sub open
++{
++	return my %configuration = (
++				'component' => 'Ganglia',
++				'function' => 'Diskfree'
++				);
++}
++
++#********************************************************************************
++#@description: Gathers data from the round robin database and updates as required
++#********************************************************************************
++sub update
++{	
++	$data{'column'}="Ganglia_Diskfree";
++	&get_diskfree();
++	#We now have our data. Insert into Monitoring Database
++	if(&OSCAR::OCA::Gather::update(%data)){
++		print "Data Update: Ganglia_Diskfree\n";
++	}
++	else{
++		print "Update Failed: Ganglia_Heartbeat\n";
++	}
++	
++}
++
++#*****************************************************************************************************
++#@description: This subroutine parses all the Round Robin Databases stored by 
++#		ganglia and extracts the data we need from them(disk free)
++#@returns:     It returns an array of hashes which corresponding to the <hostname> and <nodedata> pairs
++#******************************************************************************************************
++sub get_diskfree
++{
++	my $node_home;
++	my $cluster_home;
++	my @result;
++	my $nodedata;
++	if(-e $rrd_home){		
++		opendir(DIR,$rrd_home);
++		@clusters = readdir(DIR);
++		closedir(DIR);
++ 		@clusters = grep(!/^\./,@clusters);
++		@clusters = grep(!/__/,@clusters);
++		@clusters = grep(!/unspecified/,@clusters);
++
++		#Now go to each cluster home and do some work!
++		foreach my $cluster(@clusters)
++		{
++			$cluster_home = $rrd_home."/".$cluster;
++			opendir(DIR,$cluster_home);
++			@nodes = readdir(DIR);
++			closedir(DIR);
++			@nodes = grep(!/^\./,@nodes);
++			@nodes = grep(!/__/,@nodes);
++			foreach my $node(@nodes)
++			{
++				$node_home = $cluster_home."/".$node;
++				@result = `rrdtool fetch '$node_home/disk_free.rrd' AVERAGE -s -30 -e -10`;
++				$nodedata = $result[2]; # bcos the 0 and 1 index will never contain any useful data.
++				#Since the data is in the form of <time interval>: <disk space>, extract only disk space
++				$nodedata =~ /(\d)+.{3}(.{12}).{2}(\d{2})/;
++				if(defined $2 && defined $3)
++				{
++					$nodedata = ($2 * (10**$3)); #Express it in decimal system without the exponents
++					$nodedata .="GB";
++					$data{$node} = $nodedata;
++				}
++				else
++				{
++					$nodedata ="UNDEF";
++					$data{$node} = $nodedata;
++				}
++			}
++		}
++		
++	}
++	else{
++		die"Could not find Round Robin Database home";
++	}
++}
++
++1;
++
++
++
++
++
+Index: lib/OSCAR/OCA/Gather/Ganglia_Heartbeat.pm
+===================================================================
+--- lib/OSCAR/OCA/Gather/Ganglia_Heartbeat.pm	(revision 0)
++++ lib/OSCAR/OCA/Gather/Ganglia_Heartbeat.pm	(revision 0)
+@@ -0,0 +1,99 @@
++#!/usr/bin/env perl
++#   Copyright (c) 2008 Okoye Chuka <okoye9@gmail.com>
++#                    All rights reserved.
++#
++#   This program is free software; you can redistribute it and/or modify
++#   it under the terms of the GNU General Public License as published by
++#   the Free Software Foundation; either version 2 of the License, or
++#   (at your option) any later version.
++#
++#   This program is distributed in the hope that it will be useful,
++#   but WITHOUT ANY WARRANTY; without even the implied warranty of
++#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++#   GNU General Public License for more details.
++#
++#   You should have received a copy of the GNU General Public License
++#   along with this program; if not, write to the Free Software#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++#
++# @description: This script uses Ganglia's Heartbeat to
++#		determine the state of the cluster. It checks
++#		to see what nodes are down then updates as 
++#		necessary.
++
++package OCA::Gather::Ganglia_Heartbeat;
++
++use strict;
++use warnings;
++use lib "$ENV{OSCAR_HOME}/lib";
++use OSCAR::Database;
++use OSCAR::OCA::Gather;
++use Data::Dumper;
++
++my @cmd_result;
++my $num_of_dead;
++my @temp;
++my $node;
++my $home;
++my %data; 
++my %options;
++my @error;
++my @results;
++my %hostname;
++my $domain_name;
++
++#***********************************************
++#@description: Called when module is initialized
++#@return:	Configuration information
++#***********************************************
++sub open
++{
++	return my %configuration = (
++					'component' => 'Ganglia',
++					'function' => 'Heartbeat'
++				);
++}
++
++#*****************************************************************************************************
++#@description: Gathers heartbeat information(with gstat) and inserts into database using the framework
++#*****************************************************************************************************
++sub update
++{
++	#We retrieve the domain name from the hostname since the full hostname is required
++	#for the monitoring database. Example oscarnode1.xeno instead of oscarnode1
++	$domain_name = `hostname`;
++	chomp($domain_name);
++	@temp = split(/\./,$domain_name);
++	$domain_name = $temp[1];
++	
++	#gstat is used to find information about the cluster like number of nodes down
++	@cmd_result = `gstat -d`;
++	@temp = split(/:/, $cmd_result[4]); #index 4 always contains the num of dead hosts.
++	$temp[1] =~ s/\s//;
++	$num_of_dead = $temp[1];
++	
++	$data{'column'} = "Ganglia_Heartbeat";
++	
++	&OSCAR::Database::get_client_nodes(\@results,\%options, \@error);
++	foreach my $clients(@results){
++		#Set all nodes initially to NODE_UP. If it is down it will be changed later.
++		$hostname{$clients->{hostname}}="NODE_UP";
++	}
++	
++	#Now we extract the names of all dead nodes and set their values to NODE_DOWN
++	while($num_of_dead != 0){
++		$node = $cmd_result[8+$num_of_dead];
++		$node =~ /\s*(\w*)/;
++		$hostname{"$1.$domain_name"} = "NODE_DOWN";
++		$num_of_dead -= 1;
++	}
++	foreach my $key(keys %hostname){
++		$data{$key}=$hostname{$key};
++	}	
++	if(&OSCAR::OCA::Gather::update(%data)){
++		print"Data Update: Ganglia_Heartbeat\n";
++	}
++	else{
++		print "Update Failed: Ganglia_Heartbeat\n";
++	}
++}
++1;
+Index: lib/OSCAR/OCA/Action/C3.pm
+===================================================================
+--- lib/OSCAR/OCA/Action/C3.pm	(revision 0)
++++ lib/OSCAR/OCA/Action/C3.pm	(revision 0)
+@@ -0,0 +1,32 @@
++#The C3.pm module for the Monitoring Action Subsystem
++#
++#@author: Okoye Chuka <okoye9@gmail.com>
++#
++
++
++package OCA::Action::C3;
++
++use strict;
++use warnings;
++use Data::Dumper;
++
++#****************************************************************
++#@description: This open method is called by the Action system 
++#		when the rules specified by C3 needs to be queried
++#
++#@parameters: Rule_Name and Hash _Reference
++#
++#Rule_Name: Find out if C3 cares about a particular rule change
++#Hash_Reference: Containing data about the state of the cluster.
++#****************************************************************
++sub open($@)
++{
++	my ($rule,@mon_data) = @_;
++	my $c3_rules_directory = "$ENV{ACTION_RULES_HOME}/C3"; 
++	if(-e "$c3_rules_directory/$rule")
++	{
++		system("$c3_rules_directory/$rule @mon_data");
++	}
++}
++1;
++
+Index: lib/OSCAR/OCA/Action/RULES/C3/NODE_UP
+===================================================================
+--- lib/OSCAR/OCA/Action/RULES/C3/NODE_UP	(revision 0)
++++ lib/OSCAR/OCA/Action/RULES/C3/NODE_UP	(revision 0)
+@@ -0,0 +1,63 @@
++#!/usr/bin/perl
++# This script is called by the monitoring action subsystem when a
++# NODE_UP system  configuration change occurs in the database.
++# It assumes the cluster to be updated is the local cluster
++#
++# @author: Okoye Chuka D. <okoye9@gmail.com>
++
++use strict;
++use warnings;
++
++my %node_cluster_assoc;
++my $config_home;
++my @config_info;
++my @nodes;
++my $index=-1;
++	#Set the home directory of the C3 configuration file
++	if(-e '/etc/c3.conf')
++	{
++		$config_home = '/etc/c3.conf'; 
++	}	
++	else
++	{
++		$config_home = $ENV{"C3_CONF"};
++	}
++
++#Next open config file and find the appropriate cluster then update it.	
++
++	open(FILE,$config_home);
++		
++	@config_info = <FILE>;
++
++#Remove the domain name for each of the hostnames.
++
++	foreach my $name(@ARGV)
++	{
++		$name =~ /(\w*)/;
++		push @nodes, $1;
++	}
++	
++#Next declare each node dead in the c3.conf file if it has not been
++#already been done.
++	
++
++	foreach my $node(@nodes)
++	{
++		while($index < $#config_info)
++		{
++			$index++;
++			if(($config_info[$index] =~ m/\s*dead\s*/)&&($config_info[$index] =~ m/$node$/))
++			{
++				print "Specifying $node alive in c3.conf\n";
++				$config_info[$index] = "\t$node\n";
++				$index = $#config_info +1;
++			}
++		}
++	}
++
++#At this point we have finished setting node down on all nodes. We know print
++#out the configuration file to config_home.
++open(FILE,">$config_home");
++print FILE @config_info;
++close FILE;
++
+
+Property changes on: lib/OSCAR/OCA/Action/RULES/C3/NODE_UP
+___________________________________________________________________
+Name: svn:executable
+   + *
+
+Index: lib/OSCAR/OCA/Action/RULES/C3/NODE_DOWN
+===================================================================
+--- lib/OSCAR/OCA/Action/RULES/C3/NODE_DOWN	(revision 0)
++++ lib/OSCAR/OCA/Action/RULES/C3/NODE_DOWN	(revision 0)
+@@ -0,0 +1,64 @@
++#!/usr/bin/perl
++# This script is called by the monitoring action subsystem when a
++# NODE_DOWN system  configuration change occurs in the database.
++# It assumes the cluster to be updated is the local cluster
++#
++# @author: Okoye Chuka D. <okoye9@gmail.com>
++
++use strict;
++use warnings;
++
++my %node_cluster_assoc;
++my $config_home;
++my @config_info;
++my @nodes;
++my $index=-1;
++	#Set the home directory of the C3 configuration file
++	if(-e '/etc/c3.conf')
++	{
++		$config_home = '/etc/c3.conf'; 
++	}	
++	else
++	{
++		$config_home = $ENV{"C3_CONF"};
++	}
++
++#Next open config file and find the appropriate cluster then update it.	
++
++	open(FILE,$config_home);
++		
++	@config_info = <FILE>;
++
++#Remove the domain name for each of the hostnames.
++
++	foreach my $name(@ARGV)
++	{
++		$name =~ /(\w*)/;
++		push @nodes, $1;
++	}
++	
++#Next declare each node dead in the c3.conf file if it has not been
++#already been done.
++	
++
++	foreach my $node(@nodes)
++	{
++		while($index < $#config_info)
++		{
++			$index++;
++			if($config_info[$index] =~ m/^\s*$node/)
++			{
++				print "Specifying $node dead in c3.conf\n";
++				$config_info[$index] = "dead $config_info[$index]";
++				$index = $#config_info +1;
++			}
++		}
++	}
++
++#At this point we have finished setting node down on all nodes. We know print
++#out the configuration file to config_home.
++
++open(FILE,">$config_home");
++print FILE @config_info;
++close FILE;
++
+
+Property changes on: lib/OSCAR/OCA/Action/RULES/C3/NODE_DOWN
+___________________________________________________________________
+Name: svn:executable
+   + *
+
+Index: lib/OSCAR/MN_Framework.pm
+===================================================================
+--- lib/OSCAR/MN_Framework.pm	(revision 0)
++++ lib/OSCAR/MN_Framework.pm	(revision 0)
+@@ -0,0 +1,89 @@
++#   Copyright (c) 2008 Okoye Chuka <okoye9@gmail.com>
++#                    All rights reserved.
++#
++#   This program is free software; you can redistribute it and/or modify
++#   it under the terms of the GNU General Public License as published by
++#   the Free Software Foundation; either version 2 of the License, or
++#   (at your option) any later version.
++#
++#   This program is distributed in the hope that it will be useful,
++#   but WITHOUT ANY WARRANTY; without even the implied warranty of
++#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++#   GNU General Public License for more details.
++#
++#   You should have received a copy of the GNU General Public License
++#   along with this program; if not, write to the Free Software#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++#
++#@description:	This module is reponsible for creating and if necessary deleting 
++#		the Monitoring Information Table in the OSCAR Database.
++#
++#@methods:	create: creates a new table. 
++#		destroy: Deletes the table.
++#
++package OSCAR::MN_Framework;
++
++use strict;
++use OSCAR::oda;
++use OSCAR::Database;
++use OSCAR::Logger;
++use Data::Dumper;
++
++my %options;
++my @error_strings;
++my $sql_cmd;
++my $oscar_table_name = "Oscar_Monitor";
++#@description: The create method of the OSCAR Monitor is responsible for creating
++#		and configuring the Oscar_Monitor Table in oscar database. It receives
++#		no arguments
++#@returns:  non zero value if successful.
++sub create
++{
++	#First Delete any existing tables!
++	if(destroy()){
++		oscar_log_section("Oscar Monitoring Framework");
++		my @results;
++		if(!oda::oda_connect(\%options,\@error_strings)){
++			warn shift @error_strings while @error_strings;
++			die ("Monitoring Framework cannot connect to OSCAR Database\n");
++		}
++		oscar_log_subsection("Connected to OSCAR Monitoring Database");
++	
++		$sql_cmd = "CREATE TABLE IF NOT EXISTS $oscar_table_name(hostname VARCHAR(100) not null unique primary key)TYPE=INNODB";
++		my $success = oda::do_sql_command(\%options,$sql_cmd, \@error_strings);
++		
++		if(!$success){
++			die "Failed to create $oscar_table_name table";
++		}	
++		&OSCAR::Database::get_client_nodes(\@results,\%options,\@error_strings); #Retrieving hostnames!
++		my @hostnames;
++		foreach my $hostname(@results){
++			push @hostnames, $hostname->{hostname};
++		}
++		@results = ();
++		@error_strings =();
++		oscar_log_subsection( "Now populating Oscar Monitoring tables\n");
++		foreach my $hoste(@hostnames){#Check for possible bugs when there is more than 1 client since it returns a hash not an array!	
++			$sql_cmd = "INSERT INTO $oscar_table_name (hostname) VALUES ('$hoste')";
++			oda::do_sql_command(\%options, $sql_cmd,"","",\@error_strings);
++		}
++		
++	}
++	else{
++		oscar_log_subsection("Could not re-create $oscar_table_name");
++	}
++}
++
++#@description:	Internal sub routine called by the create method to delete any existing
++#		oscar monitoring tables.
++#@returns: non zero if successful
++	
++sub destroy
++{
++ 	$sql_cmd = "DROP TABLE IF EXISTS $oscar_table_name";
++	if(!(oda::do_sql_command(\%options,$sql_cmd,"","", \@error_strings))){
++		oscar_log_subsection("Could not delete monitoring table in Oscar Database");
++		return 0;
++	}
++	return 1;
++}
++1;
+Index: testing/monitoring_gather_test
+===================================================================
+--- testing/monitoring_gather_test	(revision 0)
++++ testing/monitoring_gather_test	(revision 0)
+@@ -0,0 +1,60 @@
++#!/usr/bin/perl
++
++#
++# Copyright (c) Okoye Chuka <okoye9@gmail.com>
++#		All rights reserved.
++#
++# A simple script that tests the monitoring framework and its components
++# by continuosly polling all the modules defined!
++#
++
++use strict;
++use warnings;
++use threads;
++use Config;
++use IO::Handle qw();
++use lib "$ENV{OSCAR_HOME}/lib";
++use OSCAR::OCA::Gather;
++use OSCAR::Logger;
++use Data::Dumper;
++
++my %config_info;
++my @thread_ids;
++
++STDOUT->autoflush(1); #Dont try to buffer STDOUT
++#First get configuration data and initialize the monitoring database
++%config_info = &OSCAR::OCA::Gather::open();
++
++$Config{useithreads} or die("This test script requires the use of perl ithreads");
++
++#Spawn new threads for each component
++foreach my $component(keys %config_info)
++{
++	push @thread_ids,threads->create(\&component_thread, $config_info{$component});
++}
++
++#Dont quit yet!
++foreach my $t_id(@thread_ids)
++{
++	$t_id->join;
++}
++#Subroutine that continuously polls the components for debugging in 10 second intervals
++sub component_thread
++{
++	my $temp;
++	my %component;
++	my $module_name;
++	my $exp;
++
++	$temp = shift;
++	%component = %$temp;
++	$module_name = $component{'component'}."_".$component{'function'};
++	oscar_log_subsection("Now monitoring: $module_name");
++	$exp = "&OCA::Gather::".$module_name."::update()";
++	while(1)
++	{
++		eval $exp;
++		print $@;
++		sleep 10;
++	}
++}

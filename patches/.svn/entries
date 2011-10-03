@@ -1,0 +1,41 @@
+8
+
+dir
+257
+https://svn.oscar.openclustergroup.org/repos/oscar-soc/soc-2008/Monitor_Framework/patches
+https://svn.oscar.openclustergroup.org/repos/oscar-soc
+
+
+
+2008-09-03T18:33:52.942072Z
+257
+okoye9
+
+
+svn:special svn:externals svn:needs-lock
+
+
+
+
+
+
+
+
+
+
+
+e79ab5e1-1014-0410-82fa-8b49d5ffd624
+
+monitoring_framework.patch
+file
+
+
+
+
+2008-09-03T17:37:12.000000Z
+c9954987c890c19b52c60af92407c6dc
+2008-09-03T18:33:52.942072Z
+257
+okoye9
+has-props
+
